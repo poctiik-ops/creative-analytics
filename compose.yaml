@@ -1,0 +1,71 @@
+name: creative-analytics
+x-app: &app
+  build: .
+  restart: unless-stopped
+  environment:
+    DB_HOST: db
+    DB_NAME: analytics
+    DB_USER: analytics
+    DB_PASSWORD_FILE: /run/secrets/db_password
+    APP_PASSWORD_FILE: /run/secrets/app_password
+    UNITY_API_KEY_FILE: /run/secrets/unity_api_key
+    UNITY_ORG_ID: ${UNITY_ORG_ID:-}
+    SYNC_INTERVAL_SECONDS: ${SYNC_INTERVAL_SECONDS:-3600}
+    SYNC_LOOKBACK_DAYS: ${SYNC_LOOKBACK_DAYS:-7}
+  secrets: [db_password, app_password, unity_api_key]
+  depends_on:
+    db:
+      condition: service_healthy
+  read_only: true
+  tmpfs: [/tmp]
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: analytics
+      POSTGRES_USER: analytics
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets: [db_password]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U analytics -d analytics']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  web:
+    <<: *app
+    healthcheck:
+      test: [CMD, python, -c, 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/health")']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+  worker:
+    <<: *app
+    command: [python, -m, app.worker]
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    ports: ["80:80", "443:443", "443:443/udp"]
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+      - caddyconfig:/config
+    depends_on:
+      web:
+        condition: service_healthy
+secrets:
+  db_password:
+    file: ./secrets/db_password
+  app_password:
+    file: ./secrets/app_password
+  unity_api_key:
+    file: ./secrets/unity_api_key
+volumes:
+  pgdata:
+  caddydata:
+  caddyconfig:
